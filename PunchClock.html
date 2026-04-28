@@ -105,14 +105,11 @@
   </div>
 
   <script>
-    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwj-BLmomt6XLUyqsBjnBroLMEp_NXcjyBKe6iiiMATnPMkvHTWjhvlzpqIxJaEIIiO7w/exec';
+    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzBDOPBrJeDkFdKrckcWZIOhZGxEUJuCPqg0I1ARcgvxXzi07EL9oreJhDWMo1hWGGO9g/exec';
     const BREAK_HOURS = 0.5;
     let entries = [];
-
-    // Restore clock-in state from localStorage so page closes don't reset it
-    const _saved = localStorage.getItem('pc_clockInTime');
-    let clockedIn = !!_saved;
-    let clockInTime = _saved ? new Date(_saved) : null;
+    let clockedIn = false;
+    let clockInTime = null;
 
     function fmtTime(d) { return d.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false }); }
     function fmtDate(d) { return d.toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' }); }
@@ -125,6 +122,14 @@
     }
     function setBtn(disabled) { document.getElementById('clockBtn').disabled = disabled; }
 
+    function restoreClockInUI() {
+      document.getElementById('clockBtn').className = 'clock-btn out';
+      document.getElementById('clockBtn').innerHTML = '⏹&nbsp;&nbsp;CLOCK OUT';
+      document.getElementById('breakNote').style.display = 'none';
+      document.getElementById('inAtTime').textContent = fmtTime(clockInTime);
+      document.getElementById('sessionBanner').classList.add('active');
+    }
+
     async function loadEntries() {
       try {
         const res = await fetch(SCRIPT_URL);
@@ -133,6 +138,12 @@
           .filter(r => r[0] && r[0] !== 'Date')
           .map(r => ({ date: r[0], inTime: r[1], outTime: r[2], raw: parseFloat(r[3]), net: parseFloat(r[4]), id: r[5] ? r[5].toString() : '' }))
           .reverse();
+        // Restore clock-in state from Sheets
+        if (data.clockInTime) {
+          clockedIn = true;
+          clockInTime = new Date(data.clockInTime);
+          restoreClockInUI();
+        }
         renderShifts();
       } catch {
         setStatus('COULD NOT CONNECT TO SHEETS', 'err');
@@ -144,13 +155,10 @@
       if (!clockedIn) {
         clockInTime = new Date();
         clockedIn = true;
-        localStorage.setItem('pc_clockInTime', clockInTime.toISOString());
-        document.getElementById('clockBtn').className = 'clock-btn out';
-        document.getElementById('clockBtn').innerHTML = '⏹&nbsp;&nbsp;CLOCK OUT';
-        document.getElementById('breakNote').style.display = 'none';
-        document.getElementById('inAtTime').textContent = fmtTime(clockInTime);
-        document.getElementById('sessionBanner').classList.add('active');
+        restoreClockInUI();
         setStatus('', '');
+        // Save clock-in time to Sheets
+        fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'clockin', clockInTime: clockInTime.toISOString() }) });
       } else {
         const out = new Date();
         const raw = toDecimal(out - clockInTime);
@@ -158,7 +166,6 @@
         const id = out.getTime().toString();
         const entry = { date: fmtDate(clockInTime), inTime: fmtTime(clockInTime), outTime: fmtTime(out), raw, net, id };
         clockedIn = false; clockInTime = null;
-        localStorage.removeItem('pc_clockInTime');
         document.getElementById('clockBtn').className = 'clock-btn in';
         document.getElementById('clockBtn').innerHTML = '⏺&nbsp;&nbsp;CLOCK IN';
         document.getElementById('breakNote').style.display = '';
@@ -229,15 +236,6 @@
       document.getElementById('clockDisplay').textContent = now.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
       document.getElementById('dateDisplay').textContent = fmtDate(now).toUpperCase();
       if (clockedIn && clockInTime) document.getElementById('elapsedDisplay').textContent = toDecimal(now - clockInTime).toFixed(2) + ' hrs';
-    }
-
-    // Restore UI if was clocked in before page closed
-    if (clockedIn && clockInTime) {
-      document.getElementById('clockBtn').className = 'clock-btn out';
-      document.getElementById('clockBtn').innerHTML = '⏹&nbsp;&nbsp;CLOCK OUT';
-      document.getElementById('breakNote').style.display = 'none';
-      document.getElementById('inAtTime').textContent = fmtTime(clockInTime);
-      document.getElementById('sessionBanner').classList.add('active');
     }
 
     loadEntries(); tick(); setInterval(tick, 1000);
