@@ -60,19 +60,24 @@
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #3a3200; border-radius: 2px; }
+    
     .btn-dot {
       display: inline-block;
-      width: 8px;
-      height: 8px;
+      width: 10px;
+      height: 10px;
       background-color: currentColor;
-      border-radius: 50%;
+      border-radius: 50%; /* Starts as a circle */
       margin-right: 12px;
       vertical-align: middle;
+      transition: border-radius 0.2s ease;
     }
-    /* Makes the dot pulse while clocked in */
+    
+    /* Makes the dot a pulsing square while clocked in */
     .clock-btn.out .btn-dot {
+      border-radius: 1px; /* Changes to a square */
       animation: pulse 1.5s infinite;
     }
+    
     @keyframes pulse {
       0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; }
     }
@@ -99,7 +104,6 @@
           <span class="session-elapsed" id="elapsedDisplay">0.00 hrs</span>
         </div>
       </div>
-      <!-- Disabled until data is loaded to prevent race conditions -->
       <button class="clock-btn in" id="clockBtn" onclick="handleClock()" disabled>
         <span class="btn-dot"></span>CLOCK IN
       </button>
@@ -143,8 +147,8 @@
 
     function restoreClockInUI() {
       document.getElementById('clockBtn').className = 'clock-btn out';
-      // Included the span for the dot animation target
-      document.getElementById('clockBtn').innerHTML = '<span class="btn-dot"></span>⏹&nbsp;&nbsp;CLOCK OUT';
+      // Removed the static square character; the .btn-dot will now morph into a square
+      document.getElementById('clockBtn').innerHTML = '<span class="btn-dot"></span>CLOCK OUT';
       document.getElementById('breakNote').style.display = 'none';
       document.getElementById('inAtTime').textContent = fmtTime(clockInTime);
       document.getElementById('sessionBanner').classList.add('active');
