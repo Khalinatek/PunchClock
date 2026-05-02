@@ -60,6 +60,22 @@
     ::-webkit-scrollbar { width: 4px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #3a3200; border-radius: 2px; }
+    .btn-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background-color: currentColor;
+    border-radius: 50%;
+    margin-right: 12px;
+    vertical-align: middle;
+    }
+    /* Makes the dot pulse while clocked in */
+    .clock-btn.out .btn-dot {
+    animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+    0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; }
+    }
   </style>
 </head>
 <body>
@@ -83,7 +99,9 @@
           <span class="session-elapsed" id="elapsedDisplay">0.00 hrs</span>
         </div>
       </div>
-      <button class="clock-btn in" id="clockBtn" onclick="handleClock()">⏺&nbsp;&nbsp;CLOCK IN</button>
+  <button class="clock-btn in" id="clockBtn" onclick="handleClock()">
+  <span class="btn-dot"></span>CLOCK IN
+</button>
       <div class="break-note" id="breakNote">30 min break auto-deducted</div>
       <div class="status-bar" id="statusBar"></div>
     </div>
@@ -167,7 +185,8 @@
         const entry = { date: fmtDate(clockInTime), inTime: fmtTime(clockInTime), outTime: fmtTime(out), raw, net, id };
         clockedIn = false; clockInTime = null;
         document.getElementById('clockBtn').className = 'clock-btn in';
-        document.getElementById('clockBtn').innerHTML = '⏺&nbsp;&nbsp;CLOCK IN';
+        document.getElementById('clockBtn').innerHTML = '<span class="btn-dot"></span>CLOCK IN';
+        document.getElementById('clockBtn').innerHTML = '<span class="btn-dot"></span>CLOCK OUT';
         document.getElementById('breakNote').style.display = '';
         document.getElementById('sessionBanner').classList.remove('active');
         entries.unshift(entry);
