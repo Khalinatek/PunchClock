@@ -35,9 +35,10 @@
     .status-bar.err     { color: #905050; }
     .status-bar.loading { color: #6b5e00; }
     .shifts-card { background: #141400; border: 1px solid #2a2600; border-radius: 4px; overflow: hidden; }
+    
     .shifts-header { padding: 14px 20px; border-bottom: 1px solid #221e00; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
     .shifts-title-area { display: flex; align-items: center; justify-content: flex-start; font-size: 10px; letter-spacing: 0.15em; color: #6b5e00; }
-    #shiftsTitleText { text-align: center; min-width: 140px; white-space: nowrap; display: inline-block; }
+    #shiftsTitleText { text-align: center; min-width: 140px; white-space: nowrap; display: inline-block; } 
     .nav-btn { background: none; border: none; color: #6b5e00; cursor: pointer; font-size: 11px; padding: 4px 6px; border-radius: 2px; transition: color 0.15s, background 0.15s; }
     .nav-btn:hover:not(:disabled) { color: #f0d800; background: rgba(240,216,0,0.1); }
     .nav-btn:disabled { opacity: 0.2; cursor: not-allowed; }
@@ -65,8 +66,21 @@
     .del-btn.danger:hover { color: #e06060; }
     .del-btn.save:hover { color: #7a9000; }
     
-    .time-input { background: #1a1800; border: 1px solid #3a3200; color: #f0d800; font-family: 'DM Mono', monospace; font-size: 11px; padding: 2px 4px; border-radius: 2px; outline: none; }
-    .time-input::-webkit-calendar-picker-indicator { filter: invert(0.8) sepia(1) hue-rotate(20deg) saturate(5); cursor: pointer; }
+    /* UPDATED: Custom Text Inputs for 24hr Time */
+    .time-input { 
+      background: #0d0d00; 
+      border: 1px solid #3a3200; 
+      color: #f0d800; 
+      font-family: 'DM Mono', monospace; 
+      font-size: 12px; 
+      padding: 4px 2px; 
+      border-radius: 3px; 
+      outline: none; 
+      text-align: center;
+      transition: border-color 0.15s;
+    }
+    .time-input:focus { border-color: #6b5e00; }
+    .time-input::placeholder { color: #3a3200; }
     
     .footer { margin-top: 16px; font-size: 10px; color: #2a2600; letter-spacing: 0.1em; }
     ::-webkit-scrollbar { width: 4px; }
@@ -123,15 +137,13 @@
 
   <script>
     // --- SECURITY OVERRIDE: BASE64 OBFUSCATION ---
-    // Paste your Base64 encoded string below (leave the quotes):
     const ENCODED_URL = 'aHR0cHM6Ly9zY3JpcHQuZ29vZ2xlLmNvbS9tYWNyb3Mvcy9BS2Z5Y2J5cVJMaHpjaTFld1JucmxRTmZwTlBQMVMxMXQtSHREWEJnNVpCQW5sSm9WRXpMNzQtRXBEdlF1bXlid2hkdDFmcUN1QS9leGVj'; 
     
-    // The browser decodes the string on the fly to get the real URL
     let SCRIPT_URL;
     try {
       SCRIPT_URL = atob(ENCODED_URL);
     } catch (e) {
-      SCRIPT_URL = ''; // Fails gracefully if string is invalid
+      SCRIPT_URL = ''; 
     }
 
     const BREAK_HOURS = 0.5;
@@ -285,11 +297,27 @@
     async function saveEdit(id) {
       const inVal = document.getElementById('editIn-' + id).value;
       const outVal = document.getElementById('editOut-' + id).value;
-      if (!inVal || !outVal) return;
+      
+      // Enforce the colon format so the math doesn't break
+      if (!inVal || !outVal || !inVal.includes(':') || !outVal.includes(':')) {
+        setStatus('USE HH:MM FORMAT', 'err');
+        setTimeout(() => setStatus('', ''), 3000);
+        return;
+      }
 
       const [iH, iM] = inVal.split(':').map(Number);
       const [oH, oM] = outVal.split(':').map(Number);
       
+      if (isNaN(iH) || isNaN(iM) || isNaN(oH) || isNaN(oM)) {
+        setStatus('INVALID TIME', 'err');
+        setTimeout(() => setStatus('', ''), 3000);
+        return;
+      }
+
+      // Reformat nicely back to 24-hr layout (e.g. "09:05")
+      const cleanIn = `${String(iH).padStart(2, '0')}:${String(iM).padStart(2, '0')}`;
+      const cleanOut = `${String(oH).padStart(2, '0')}:${String(oM).padStart(2, '0')}`;
+
       let raw = (oH - iH) + (oM - iM) / 60;
       if (raw < 0) raw += 24; 
       raw = Math.round(raw * 100) / 100;
@@ -297,8 +325,8 @@
 
       const entry = entries.find(e => e.id === id);
       if (entry) {
-        entry.inTime = inVal;
-        entry.outTime = outVal;
+        entry.inTime = cleanIn;
+        entry.outTime = cleanOut;
         entry.raw = raw;
         entry.net = net;
       }
@@ -311,7 +339,7 @@
         const res = await fetch(SCRIPT_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'edit', id: id.toString(), inTime: inVal, outTime: outVal, raw: raw, net: net })
+          body: JSON.stringify({ action: 'edit', id: id.toString(), inTime: cleanIn, outTime: cleanOut, raw: raw, net: net })
         });
         const data = await res.json();
         if (data.ok) {
@@ -377,12 +405,13 @@
       body.innerHTML = '<div class="shifts-list">' +
         weekShifts.map(e => {
           if (editingId === e.id) {
+            // UPDATED: Now uses type="text" inputs matching your color scheme perfectly
             return `<div class="shift-row" style="background:rgba(240,216,0,0.06)">
               <div>
                 <div class="shift-date">${String(e.date).toUpperCase()}</div>
                 <div class="shift-times" style="margin-top:4px;">
-                  <input type="time" class="time-input" id="editIn-${e.id}" value="${e.inTime.slice(0,5)}" style="width:70px"> –
-                  <input type="time" class="time-input" id="editOut-${e.id}" value="${e.outTime.slice(0,5)}" style="width:70px">
+                  <input type="text" class="time-input" id="editIn-${e.id}" value="${e.inTime.slice(0,5)}" style="width:50px" placeholder="HH:MM" maxlength="5"> –
+                  <input type="text" class="time-input" id="editOut-${e.id}" value="${e.outTime.slice(0,5)}" style="width:50px" placeholder="HH:MM" maxlength="5">
                 </div>
               </div>
               <div class="shift-col"><div class="col-label">GROSS</div><div class="col-gross">--</div></div>
