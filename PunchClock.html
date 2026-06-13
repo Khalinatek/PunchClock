@@ -36,10 +36,9 @@
     .status-bar.loading { color: #6b5e00; }
     .shifts-card { background: #141400; border: 1px solid #2a2600; border-radius: 4px; overflow: hidden; }
     
-    /* UPDATED HEADER SPACING */
     .shifts-header { padding: 14px 20px; border-bottom: 1px solid #221e00; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
     .shifts-title-area { display: flex; align-items: center; font-size: 10px; letter-spacing: 0.15em; color: #6b5e00; }
-    #shiftsTitleText { text-align: center; width: 110px; display: inline-block; } /* Locks arrow spacing */
+    #shiftsTitleText { text-align: center; width: 110px; display: inline-block; } 
     .nav-btn { background: none; border: none; color: #6b5e00; cursor: pointer; font-size: 11px; padding: 4px 6px; border-radius: 2px; transition: color 0.15s, background 0.15s; }
     .nav-btn:hover:not(:disabled) { color: #f0d800; background: rgba(240,216,0,0.1); }
     .nav-btn:disabled { opacity: 0.2; cursor: not-allowed; }
@@ -124,7 +123,18 @@
   </div>
 
   <script>
-    const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyqRLhzci1ewRnrlQNfpNPP1S11t-HtDXBg5ZBAnlJoVEzL74-EpDvQumybwhdt1fqCuA/exec'; // Remember to re-paste your actual URL here!
+    // --- SECURITY OVERRIDE: BASE64 OBFUSCATION ---
+    // Paste your Base64 encoded string below (leave the quotes):
+    const ENCODED_URL = 'aHR0cHM6Ly9zY3JpcHQuZ29vZ2xlLmNvbS9tYWNyb3Mvcy9BS2Z5Y2J5cVJMaHpjaTFld1JucmxRTmZwTlBQMVMxMXQtSHREWEJnNVpCQW5sSm9WRXpMNzQtRXBEdlF1bXlid2hkdDFmcUN1QS9leGVj'; 
+    
+    // The browser decodes the string on the fly to get the real URL
+    let SCRIPT_URL;
+    try {
+      SCRIPT_URL = atob(ENCODED_URL);
+    } catch (e) {
+      SCRIPT_URL = ''; // Fails gracefully if string is invalid
+    }
+
     const BREAK_HOURS = 0.5;
     
     let entries = [];
@@ -138,7 +148,6 @@
     function fmtDate(d) { return d.toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' }); }
     function toDecimal(ms) { return Math.round((ms / 3600000) * 100) / 100; }
     
-    // NEW FORMATTER: Returns "JUN 01"
     function fmtShortDate(d) {
       const month = d.toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
       const day = String(d.getDate()).padStart(2, '0');
@@ -198,9 +207,9 @@
 
     // --- Core Logic ---
     async function loadEntries() {
-      if (SCRIPT_URL === 'YOUR_APPS_SCRIPT_WEB_APP_URL_HERE') {
-         setStatus('UPDATE SCRIPT_URL IN HTML', 'err');
-         document.getElementById('shiftsBody').innerHTML = '<div class="empty-state">PLEASE CONFIGURE SCRIPT_URL</div>';
+      if (!SCRIPT_URL || SCRIPT_URL.indexOf('script.google.com') === -1) {
+         setStatus('INVALID ENCODED URL', 'err');
+         document.getElementById('shiftsBody').innerHTML = '<div class="empty-state">PLEASE ENCODE A VALID URL</div>';
          return;
       }
       try {
@@ -341,7 +350,6 @@
       
       const { weekStart, weekEnd } = getViewBoundaries();
       
-      // Update UI Header text and button states with shorter date format
       if (currentWeekOffset === 0) {
         titleText.textContent = 'THIS WEEK';
         nextBtn.disabled = true;
