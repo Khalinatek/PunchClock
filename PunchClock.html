@@ -118,9 +118,9 @@
     <div class="shifts-card">
       <div class="shifts-header">
         <div class="shifts-title-area">
-          <button class="nav-btn" onclick="changeWeek(-1)">◀</button>
+          <button class="nav-btn" onclick="changeWeek(-1)" aria-label="Previous week" title="Previous week">◀</button>
           <span id="shiftsTitleText">THIS WEEK</span>
-          <button class="nav-btn" id="nextWeekBtn" onclick="changeWeek(1)" disabled>▶</button>
+          <button class="nav-btn" id="nextWeekBtn" onclick="changeWeek(1)" disabled aria-label="Next week" title="Next week">▶</button>
         </div>
         <div class="shifts-meta" id="shiftsMeta" style="display:none">
           <span class="shifts-total" id="shiftsTotal"></span>
@@ -146,8 +146,47 @@
       SCRIPT_URL = ''; 
     }
 
+    // Shared secret — must match the API_TOKEN value in code.gs.
+    // Injected at deploy time by GitHub Actions (see .github/workflows/deploy.yml).
+    // For local testing, temporarily replace the placeholder with your real token.
+    const API_TOKEN = '__API_TOKEN__';
+
     const BREAK_HOURS = 0.5;
-    
+
+    // --- Offline safety net (localStorage) ---
+    // Persists the open session and any shift whose save failed, so a dropped
+    // network request can't lose a shift or strand you "clocked in".
+    const LS_SESSION = 'punchclock_openSession';
+    const LS_PENDING = 'punchclock_pendingShifts';
+
+    function lsGet(key, fallback) {
+      try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); }
+      catch { return fallback; }
+    }
+    function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
+    function lsRemove(key) { try { localStorage.removeItem(key); } catch {} }
+
+    function saveOpenSession(iso) { lsSet(LS_SESSION, iso); }
+    function clearOpenSession() { lsRemove(LS_SESSION); }
+    function getOpenSession() { return lsGet(LS_SESSION, null); }
+
+    function getPending() { const p = lsGet(LS_PENDING, []); return Array.isArray(p) ? p : []; }
+    function addPending(entry) {
+      const p = getPending().filter(e => e.id !== entry.id);
+      p.push(entry);
+      lsSet(LS_PENDING, p);
+    }
+    function removePending(id) { lsSet(LS_PENDING, getPending().filter(e => e.id !== id)); }
+
+    // POST helper that always attaches the auth token.
+    function apiPost(payload) {
+      return fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ ...payload, token: API_TOKEN })
+      });
+    }
+
     let entries = [];
     let clockedIn = false;
     let clockInTime = null;
@@ -158,6 +197,21 @@
     function fmtTime(d) { return d.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false }); }
     function fmtDate(d) { return d.toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' }); }
     function toDecimal(ms) { return Math.round((ms / 3600000) * 100) / 100; }
+
+    // Single source of truth for the hours math (previously duplicated).
+    function netFromRaw(raw) {
+      return raw >= 8.5 ? Math.max(0, Math.round((raw - BREAK_HOURS) * 100) / 100) : raw;
+    }
+    // Gross hours between two "HH:MM" strings; returns null if either is invalid.
+    function rawFromTimes(inVal, outVal) {
+      if (!inVal || !outVal || !inVal.includes(':') || !outVal.includes(':')) return null;
+      const [iH, iM] = inVal.split(':').map(Number);
+      const [oH, oM] = outVal.split(':').map(Number);
+      if ([iH, iM, oH, oM].some(isNaN)) return null;
+      let raw = (oH - iH) + (oM - iM) / 60;
+      if (raw < 0) raw += 24; // shift crossed midnight
+      return Math.round(raw * 100) / 100;
+    }
     
     function fmtShortDate(d) {
       const month = d.toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
@@ -224,7 +278,7 @@
          return;
       }
       try {
-        const res = await fetch(SCRIPT_URL);
+        const res = await apiPost({ action: 'load' });
         const data = await res.json();
         if (!data.ok) throw new Error("Backend error");
 
@@ -232,17 +286,45 @@
           .filter(r => r[0] && r[0] !== 'Date')
           .map(r => ({ date: r[0], inTime: r[1], outTime: r[2], raw: parseFloat(r[3]), net: parseFloat(r[4]), id: r[5] ? r[5].toString() : '' }))
           .reverse();
-          
+
+        // Merge in any shifts that failed to save previously so they're never lost.
+        const serverIds = new Set(entries.map(e => e.id));
+        for (const p of getPending()) {
+          if (!serverIds.has(p.id)) entries.unshift(p);
+          else removePending(p.id); // server already has it
+        }
+
+        // Restore an open session: trust the server first, then the local backup
+        // (covers a clock-in whose request never reached the server).
+        const localSession = getOpenSession();
         if (data.clockInTime) {
           clockedIn = true;
           clockInTime = new Date(data.clockInTime);
+          saveOpenSession(clockInTime.toISOString());
+          restoreClockInUI();
+        } else if (localSession) {
+          clockedIn = true;
+          clockInTime = new Date(localSession);
           restoreClockInUI();
         }
+
         renderShifts();
         setBtn(false);
+
+        retryPending(); // resend anything still queued from a past failure
       } catch {
         setStatus('COULD NOT CONNECT TO SHEETS', 'err');
         document.getElementById('shiftsBody').innerHTML = '<div class="empty-state">CONNECTION ERROR</div>';
+      }
+    }
+
+    async function retryPending() {
+      for (const entry of getPending()) {
+        try {
+          const res = await apiPost({ action: 'add', ...entry });
+          const data = await res.json();
+          if (data.ok) removePending(entry.id);
+        } catch { /* keep it queued for the next load */ }
       }
     }
 
@@ -251,47 +333,65 @@
       if (!clockedIn) {
         clockInTime = new Date();
         clockedIn = true;
+        saveOpenSession(clockInTime.toISOString()); // survives a failed request / closed tab
         restoreClockInUI();
         setStatus('STARTING SESSION...', 'loading');
-        
+
         try {
-          await fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'clockin', clockInTime: clockInTime.toISOString() }) });
+          await apiPost({ action: 'clockin', clockInTime: clockInTime.toISOString() });
           setStatus('CLOCKED IN ✓', 'ok');
           setTimeout(() => setStatus('', ''), 3000);
         } catch {
-          setStatus('NETWORK ERROR — CHECK CONNECTION', 'err');
+          setStatus('NETWORK ERROR — SAVED LOCALLY', 'err');
         } finally { setBtn(false); }
       } else {
         const out = new Date();
         const raw = toDecimal(out - clockInTime);
-        const net = raw >= 8.5 ? Math.max(0, Math.round((raw - BREAK_HOURS) * 100) / 100) : raw;
+        const net = netFromRaw(raw);
         const id = out.getTime().toString();
         const entry = { date: fmtDate(clockInTime), inTime: fmtTime(clockInTime), outTime: fmtTime(out), raw, net, id };
-        
-        clockedIn = false; 
+
+        clockedIn = false;
         clockInTime = null;
+        clearOpenSession();
         document.getElementById('clockBtn').className = 'clock-btn in';
         document.getElementById('clockBtn').innerHTML = '<span class="btn-dot"></span>CLOCK IN';
         document.getElementById('breakNote').style.display = '';
         document.getElementById('sessionBanner').classList.remove('active');
-        
+
         entries.unshift(entry);
-        currentWeekOffset = 0; 
+        currentWeekOffset = 0;
         renderShifts();
         setStatus('SAVING...', 'loading');
-        
+
         try {
-          await fetch(SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'add', ...entry }) });
+          const res = await apiPost({ action: 'add', ...entry });
+          const data = await res.json();
+          if (!data.ok) throw new Error();
           setStatus('SAVED TO SHEETS ✓', 'ok');
           setTimeout(() => setStatus('', ''), 3000);
-        } catch { setStatus('SAVE FAILED — CHECK CONNECTION', 'err'); } 
-        finally { setBtn(false); }
+        } catch {
+          addPending(entry); // queued; retried automatically on next load
+          setStatus('SAVE FAILED — WILL RETRY', 'err');
+        } finally { setBtn(false); }
       }
     }
 
     function editEntry(id) {
       editingId = id;
       renderShifts();
+    }
+
+    // Live-updates the GROSS/NET cells as you type in the edit inputs.
+    function liveEditCalc(id) {
+      const inVal = document.getElementById('editIn-' + id).value;
+      const outVal = document.getElementById('editOut-' + id).value;
+      const gross = document.getElementById('editGross-' + id);
+      const net = document.getElementById('editNet-' + id);
+      const raw = rawFromTimes(inVal, outVal);
+      if (raw === null) { gross.textContent = '--'; net.textContent = '--'; return; }
+      gross.textContent = raw.toFixed(2);
+      net.textContent = netFromRaw(raw).toFixed(2);
     }
 
     async function saveEdit(id) {
@@ -318,10 +418,8 @@
       const cleanIn = `${String(iH).padStart(2, '0')}:${String(iM).padStart(2, '0')}`;
       const cleanOut = `${String(oH).padStart(2, '0')}:${String(oM).padStart(2, '0')}`;
 
-      let raw = (oH - iH) + (oM - iM) / 60;
-      if (raw < 0) raw += 24; 
-      raw = Math.round(raw * 100) / 100;
-      const net = raw >= 8.5 ? Math.max(0, Math.round((raw - BREAK_HOURS) * 100) / 100) : raw;
+      const raw = rawFromTimes(cleanIn, cleanOut);
+      const net = netFromRaw(raw);
 
       const entry = entries.find(e => e.id === id);
       if (entry) {
@@ -336,11 +434,7 @@
       setStatus('UPDATING...', 'loading');
 
       try {
-        const res = await fetch(SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'edit', id: id.toString(), inTime: cleanIn, outTime: cleanOut, raw: raw, net: net })
-        });
+        const res = await apiPost({ action: 'edit', id: id.toString(), inTime: cleanIn, outTime: cleanOut, raw: raw, net: net });
         const data = await res.json();
         if (data.ok) {
           setStatus('UPDATED ✓', 'ok');
@@ -356,11 +450,7 @@
       renderShifts();
       setStatus('DELETING...', 'loading');
       try {
-        const res = await fetch(SCRIPT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify({ action: 'delete', id: id.toString() })
-        });
+        const res = await apiPost({ action: 'delete', id: id.toString() });
         const data = await res.json();
         if (data.ok) {
           setStatus('DELETED ✓', 'ok');
@@ -410,15 +500,15 @@
               <div>
                 <div class="shift-date">${String(e.date).toUpperCase()}</div>
                 <div class="shift-times" style="margin-top:4px;">
-                  <input type="text" class="time-input" id="editIn-${e.id}" value="${e.inTime.slice(0,5)}" style="width:50px" placeholder="HH:MM" maxlength="5"> –
-                  <input type="text" class="time-input" id="editOut-${e.id}" value="${e.outTime.slice(0,5)}" style="width:50px" placeholder="HH:MM" maxlength="5">
+                  <input type="text" class="time-input" id="editIn-${e.id}" value="${e.inTime.slice(0,5)}" style="width:50px" placeholder="HH:MM" maxlength="5" aria-label="Clock in time" oninput="liveEditCalc('${e.id}')"> –
+                  <input type="text" class="time-input" id="editOut-${e.id}" value="${e.outTime.slice(0,5)}" style="width:50px" placeholder="HH:MM" maxlength="5" aria-label="Clock out time" oninput="liveEditCalc('${e.id}')">
                 </div>
               </div>
-              <div class="shift-col"><div class="col-label">GROSS</div><div class="col-gross">--</div></div>
-              <div class="shift-col"><div class="col-label">NET</div><div class="col-net">--</div></div>
+              <div class="shift-col"><div class="col-label">GROSS</div><div class="col-gross" id="editGross-${e.id}">${parseFloat(e.raw).toFixed(2)}</div></div>
+              <div class="shift-col"><div class="col-label">NET</div><div class="col-net" id="editNet-${e.id}">${parseFloat(e.net).toFixed(2)}</div></div>
               <div class="action-btns">
-                <button class="del-btn save" onclick="saveEdit('${e.id}')">💾</button>
-                <button class="del-btn" onclick="editingId=null; renderShifts()">✕</button>
+                <button class="del-btn save" onclick="saveEdit('${e.id}')" aria-label="Save shift" title="Save">💾</button>
+                <button class="del-btn" onclick="editingId=null; renderShifts()" aria-label="Cancel edit" title="Cancel">✕</button>
               </div>
             </div>`;
           } else {
@@ -430,8 +520,8 @@
               <div class="shift-col"><div class="col-label">GROSS</div><div class="col-gross">${parseFloat(e.raw).toFixed(2)}</div></div>
               <div class="shift-col"><div class="col-label">NET</div><div class="col-net">${parseFloat(e.net).toFixed(2)}</div></div>
               <div class="action-btns">
-                <button class="del-btn" onclick="editEntry('${e.id}')">✎</button>
-                <button class="del-btn danger" onclick="removeEntry('${e.id}')">×</button>
+                <button class="del-btn" onclick="editEntry('${e.id}')" aria-label="Edit shift" title="Edit">✎</button>
+                <button class="del-btn danger" onclick="removeEntry('${e.id}')" aria-label="Delete shift" title="Delete">×</button>
               </div>
             </div>`;
           }
