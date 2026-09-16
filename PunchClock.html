@@ -335,7 +335,8 @@
         clockedIn = true;
         saveOpenSession(clockInTime.toISOString()); // survives a failed request / closed tab
         restoreClockInUI();
-        setStatus('STARTING SESSION...', 'loading');
+        setBtn(false); // re-enable instantly; the ~2s save runs in the background
+        setStatus('SAVING...', 'loading');
 
         try {
           await apiPost({ action: 'clockin', clockInTime: clockInTime.toISOString() });
@@ -343,7 +344,7 @@
           setTimeout(() => setStatus('', ''), 3000);
         } catch {
           setStatus('NETWORK ERROR — SAVED LOCALLY', 'err');
-        } finally { setBtn(false); }
+        }
       } else {
         const out = new Date();
         const raw = toDecimal(out - clockInTime);
@@ -362,6 +363,7 @@
         entries.unshift(entry);
         currentWeekOffset = 0;
         renderShifts();
+        setBtn(false); // re-enable instantly; the ~2s save runs in the background
         setStatus('SAVING...', 'loading');
 
         try {
@@ -373,7 +375,7 @@
         } catch {
           addPending(entry); // queued; retried automatically on next load
           setStatus('SAVE FAILED — WILL RETRY', 'err');
-        } finally { setBtn(false); }
+        }
       }
     }
 
