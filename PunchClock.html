@@ -132,7 +132,7 @@
       </div>
     </div>
 
-    <div class="footer">DATA SYNCED TO GOOGLE SHEETS · BREAK DEDUCTION: 0.5 HRS (8.5+ HR SHIFTS)</div>
+    <div class="footer">DATA SYNCED TO GOOGLE SHEETS · BREAK DEDUCTION: 0.5 HRS (8.5+ HR SHIFTS)<br><span id="appVersion"></span></div>
   </div>
 
   <script>
@@ -166,9 +166,14 @@
     function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
     function lsRemove(key) { try { localStorage.removeItem(key); } catch {} }
 
-    function saveOpenSession(iso) { lsSet(LS_SESSION, iso); }
+    function saveOpenSession(iso, sessionId) { lsSet(LS_SESSION, { clockInTime: iso, sessionId: sessionId || null }); }
     function clearOpenSession() { lsRemove(LS_SESSION); }
-    function getOpenSession() { return lsGet(LS_SESSION, null); }
+    function getOpenSession() {
+      const v = lsGet(LS_SESSION, null);
+      if (!v) return null;
+      if (typeof v === 'string') return { clockInTime: v, sessionId: null }; // legacy format
+      return v;
+    }
 
     function getPending() { const p = lsGet(LS_PENDING, []); return Array.isArray(p) ? p : []; }
     function addPending(entry) {
@@ -194,7 +199,9 @@
     let currentWeekOffset = 0;
     let lastLocalActionAt = 0; // when this device last punched in/out (guards auto-sync)
     let syncing = false;       // prevents overlapping background syncs
+    let currentSessionId = null; // unique id of the open session (for server-side dedup)
     const SYNC_MS = 30000;     // how often a foregrounded tab re-checks the server
+    const VERSION = '0.4A';    // bump on each deploy; shown in the footer
 
     // --- Date & Time Formatting Helpers ---
     function fmtTime(d) { return d.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false }); }
@@ -314,11 +321,13 @@
         if (data.clockInTime) {
           clockedIn = true;
           clockInTime = new Date(data.clockInTime);
-          saveOpenSession(clockInTime.toISOString());
+          currentSessionId = data.sessionId || null;
+          saveOpenSession(clockInTime.toISOString(), currentSessionId);
           restoreClockInUI();
         } else {
           clockedIn = false;
           clockInTime = null;
+          currentSessionId = null;
           clearOpenSession();
         }
 
@@ -333,7 +342,8 @@
         const localSession = getOpenSession();
         if (localSession) {
           clockedIn = true;
-          clockInTime = new Date(localSession);
+          clockInTime = new Date(localSession.clockInTime);
+          currentSessionId = localSession.sessionId;
           restoreClockInUI();
           setBtn(false);
         }
@@ -361,7 +371,8 @@
           if (!clockedIn) {
             clockedIn = true;
             clockInTime = new Date(data.clockInTime);
-            saveOpenSession(clockInTime.toISOString());
+            currentSessionId = data.sessionId || null;
+            saveOpenSession(clockInTime.toISOString(), currentSessionId);
             restoreClockInUI();
           }
         } else if (clockedIn && Date.now() - lastLocalActionAt > 10000) {
@@ -370,6 +381,7 @@
           // can't punch the same session out again (the duplicate you saw).
           clockedIn = false;
           clockInTime = null;
+          currentSessionId = null;
           clearOpenSession();
           showClockedOutUI();
           setStatus('CLOCKED OUT ON ANOTHER DEVICE', 'ok');
@@ -385,7 +397,9 @@
         try {
           const res = await apiPost({ action: 'add', ...entry });
           const data = await res.json();
-          if (data.ok) removePending(entry.id);
+          // Drop from the queue if it saved OR was already recorded (duplicate);
+          // in both cases the shift is on the server, so stop retrying it.
+          if (data.ok || data.duplicate) removePending(entry.id);
         } catch { /* keep it queued for the next load */ }
       }
     }
@@ -396,13 +410,16 @@
       if (!clockedIn) {
         clockInTime = new Date();
         clockedIn = true;
-        saveOpenSession(clockInTime.toISOString()); // survives a failed request / closed tab
+        // Mint a unique id for this session; the server stores it and rejects any
+        // second punch-out for the same session (no matter which device).
+        currentSessionId = clockInTime.getTime().toString() + '-' + Math.random().toString(36).slice(2, 8);
+        saveOpenSession(clockInTime.toISOString(), currentSessionId); // survives a failed request / closed tab
         restoreClockInUI();
         setBtn(false); // re-enable instantly; the ~2s save runs in the background
         setStatus('SAVING...', 'loading');
 
         try {
-          await apiPost({ action: 'clockin', clockInTime: clockInTime.toISOString() });
+          await apiPost({ action: 'clockin', clockInTime: clockInTime.toISOString(), sessionId: currentSessionId });
           setStatus('CLOCKED IN ✓', 'ok');
           setTimeout(() => setStatus('', ''), 3000);
         } catch {
@@ -413,10 +430,12 @@
         const raw = toDecimal(out - clockInTime);
         const net = netFromRaw(raw);
         const id = out.getTime().toString();
-        const entry = { date: fmtDate(clockInTime), inTime: fmtTime(clockInTime), outTime: fmtTime(out), raw, net, id };
+        const sessionId = currentSessionId;
+        const entry = { date: fmtDate(clockInTime), inTime: fmtTime(clockInTime), outTime: fmtTime(out), raw, net, id, sessionId };
 
         clockedIn = false;
         clockInTime = null;
+        currentSessionId = null;
         clearOpenSession();
         showClockedOutUI();
 
@@ -429,9 +448,20 @@
         try {
           const res = await apiPost({ action: 'add', ...entry });
           const data = await res.json();
-          if (!data.ok) throw new Error();
-          setStatus('SAVED TO SHEETS ✓', 'ok');
-          setTimeout(() => setStatus('', ''), 3000);
+          if (data.duplicate) {
+            // Server already recorded this session (it was punched out elsewhere).
+            // Discard our optimistic row instead of queuing a duplicate.
+            entries = entries.filter(e => e.id !== id);
+            renderShifts();
+            setStatus('ALREADY CLOCKED OUT ELSEWHERE', 'err');
+            setTimeout(() => setStatus('', ''), 4000);
+            syncState(); // pull the authoritative shift from the server
+          } else if (!data.ok) {
+            throw new Error();
+          } else {
+            setStatus('SAVED TO SHEETS ✓', 'ok');
+            setTimeout(() => setStatus('', ''), 3000);
+          }
         } catch {
           addPending(entry); // queued; retried automatically on next load
           setStatus('SAVE FAILED — WILL RETRY', 'err');
@@ -619,6 +649,7 @@
       if (clockedIn && clockInTime) document.getElementById('elapsedDisplay').textContent = toDecimal(now - clockInTime).toFixed(2) + ' hrs';
     }
 
+    document.getElementById('appVersion').textContent = 'PunchClock ' + VERSION;
     loadEntries(); tick(); setInterval(tick, 1000);
 
     // Keep a long-open tab honest about actions taken on another device.

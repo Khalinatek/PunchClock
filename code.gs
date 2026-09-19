@@ -20,11 +20,24 @@ function doPost(e) {
       // getDisplayValues() ensures we get "08:57" instead of "Sat Dec 30 1899..."
       const rows = sheet.getDataRange().getDisplayValues();
       const clockInTime = stateSheet.getRange('A1').getValue().toString();
-      return ContentService.createTextOutput(JSON.stringify({ok: true, rows: rows, clockInTime}))
+      const sessionId = stateSheet.getRange('B1').getValue().toString();
+      return ContentService.createTextOutput(JSON.stringify({ok: true, rows: rows, clockInTime, sessionId}))
         .setMimeType(ContentService.MimeType.JSON);
     } else if (data.action === 'add') {
-      sheet.appendRow([data.date, data.inTime, data.outTime, data.raw, data.net, data.id]);
-      stateSheet.clearContents(); 
+      // Idempotency guard: refuse a second shift for a session already recorded
+      // (e.g. the same session punched out on two devices, or a retried save that
+      // actually went through). Session IDs live in column G.
+      if (data.sessionId) {
+        const rows = sheet.getDataRange().getValues();
+        for (let i = 0; i < rows.length; i++) {
+          if (rows[i][6] && rows[i][6].toString() === data.sessionId.toString()) {
+            return ContentService.createTextOutput(JSON.stringify({ok: false, duplicate: true, error: 'session_already_recorded'}))
+              .setMimeType(ContentService.MimeType.JSON);
+          }
+        }
+      }
+      sheet.appendRow([data.date, data.inTime, data.outTime, data.raw, data.net, data.id, data.sessionId || '']);
+      stateSheet.clearContents();
     } else if (data.action === 'delete') {
       const rows = sheet.getDataRange().getValues();
       for (let i = rows.length - 1; i >= 0; i--) {
@@ -36,6 +49,7 @@ function doPost(e) {
     } else if (data.action === 'clockin') {
       stateSheet.clearContents();
       stateSheet.getRange('A1').setValue(data.clockInTime);
+      stateSheet.getRange('B1').setValue(data.sessionId || ''); // so every device learns this session's id
     } else if (data.action === 'edit') {
       const rows = sheet.getDataRange().getValues();
       // Search from the bottom up to find the ID
@@ -77,6 +91,8 @@ function autoClockOut() {
   const stored = stateSheet.getRange('A1').getValue();
   if (!stored) return; // no open session
 
+  const sessionId = stateSheet.getRange('B1').getValue().toString();
+
   // A1 holds the clock-in time (ISO string, though Sheets may coerce it to a Date).
   const clockIn = (stored instanceof Date) ? stored : new Date(stored);
   if (isNaN(clockIn.getTime())) return;
@@ -103,6 +119,6 @@ function autoClockOut() {
   const outStr = '23:59';
   const id = shiftEnd.getTime().toString(); // keeps week-grouping on the shift's day
 
-  sheet.appendRow([dateStr, inStr, outStr, raw, net, id]);
+  sheet.appendRow([dateStr, inStr, outStr, raw, net, id, sessionId]);
   stateSheet.clearContents();
 }

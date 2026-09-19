@@ -13,6 +13,8 @@ A clean, minimalist, single-file HTML time-tracking application designed to log 
 - **Google Sheets Integration:** Saves all data directly to a private Google Sheet.
 - **Token-Protected Backend:** Every request carries a shared secret token, and the backend rejects anything without it — so a leaked endpoint URL alone can't read or modify your data. The URL is also Base64-obfuscated to deter casual scrapers, and visiting it directly returns nothing.
 - **Offline Safety Net:** The open session and any shift whose save fails are stored in your browser and automatically restored/retried on the next load, so a dropped network request can't lose a shift or strand you "clocked in."
+- **Cross-Device Sync (no duplicates):** Open the app on your phone and PC at once — a tab left open all day re-syncs with the server when you return to it, so it reflects a punch made elsewhere. Each clock-in also gets a unique session ID, and the backend refuses to record the same session twice, so punching out on a second device can never create a duplicate shift.
+- **Version Badge:** The current version (e.g. `PunchClock 0.4A`) is shown in the footer so you can confirm which build is deployed.
 
 ---
 
@@ -24,8 +26,9 @@ To keep your data private and entirely under your control, PunchClock uses a Goo
 1. Create a new [Google Sheet](https://sheets.new/).
 2. Rename the primary worksheet tab at the bottom to `Shifts` (capital 'S').
 3. Create the following header row in row 1 of the `Shifts` tab:
-   `Date` | `Clock In` | `Clock Out` | `Gross Hours` | `Net Hours` | `ID`
-4. Create a second worksheet tab at the bottom and name it `State`. *(The script uses this tab to remember when you clocked in if you accidentally close the app).*
+   `Date` | `Clock In` | `Clock Out` | `Gross Hours` | `Net Hours` | `ID` | `Session ID`
+   *(`Session ID` in column **G** is used for duplicate protection; existing rows without one are fine.)*
+4. Create a second worksheet tab at the bottom and name it `State`. *(The script uses this tab to remember the current session — cell A1 holds the clock-in time and B1 the session ID — so it can restore or auto-close a session you left open.)*
 
 ### 2. Backend Deployment
 1. From your Google Sheet, click **Extensions** > **Apps Script**.
