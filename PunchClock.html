@@ -294,18 +294,19 @@
           else removePending(p.id); // server already has it
         }
 
-        // Restore an open session: trust the server first, then the local backup
-        // (covers a clock-in whose request never reached the server).
-        const localSession = getOpenSession();
+        // The server is the source of truth for whether a session is open.
+        // If it says none is open, drop any stale local session rather than
+        // resurrecting it — otherwise a session closed on another browser/device
+        // reappears here and gets punched out again (duplicate shift).
         if (data.clockInTime) {
           clockedIn = true;
           clockInTime = new Date(data.clockInTime);
           saveOpenSession(clockInTime.toISOString());
           restoreClockInUI();
-        } else if (localSession) {
-          clockedIn = true;
-          clockInTime = new Date(localSession);
-          restoreClockInUI();
+        } else {
+          clockedIn = false;
+          clockInTime = null;
+          clearOpenSession();
         }
 
         renderShifts();
@@ -313,8 +314,20 @@
 
         retryPending(); // resend anything still queued from a past failure
       } catch {
+        // Offline / server unreachable: only here do we fall back to the local
+        // open-session backup, so an in-progress shift on THIS device survives a
+        // dropped connection without risking a cross-device duplicate.
+        const localSession = getOpenSession();
+        if (localSession) {
+          clockedIn = true;
+          clockInTime = new Date(localSession);
+          restoreClockInUI();
+          setBtn(false);
+        }
         setStatus('COULD NOT CONNECT TO SHEETS', 'err');
-        document.getElementById('shiftsBody').innerHTML = '<div class="empty-state">CONNECTION ERROR</div>';
+        if (!entries.length) {
+          document.getElementById('shiftsBody').innerHTML = '<div class="empty-state">CONNECTION ERROR</div>';
+        }
       }
     }
 
