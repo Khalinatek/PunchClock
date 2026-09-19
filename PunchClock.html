@@ -190,8 +190,11 @@
     let entries = [];
     let clockedIn = false;
     let clockInTime = null;
-    let editingId = null; 
-    let currentWeekOffset = 0; 
+    let editingId = null;
+    let currentWeekOffset = 0;
+    let lastLocalActionAt = 0; // when this device last punched in/out (guards auto-sync)
+    let syncing = false;       // prevents overlapping background syncs
+    const SYNC_MS = 30000;     // how often a foregrounded tab re-checks the server
 
     // --- Date & Time Formatting Helpers ---
     function fmtTime(d) { return d.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false }); }
@@ -269,8 +272,28 @@
       document.getElementById('inAtTime').textContent = fmtTime(clockInTime);
       document.getElementById('sessionBanner').classList.add('active');
     }
+    function showClockedOutUI() {
+      document.getElementById('clockBtn').className = 'clock-btn in';
+      document.getElementById('clockBtn').innerHTML = '<span class="btn-dot"></span>CLOCK IN';
+      document.getElementById('breakNote').style.display = '';
+      document.getElementById('sessionBanner').classList.remove('active');
+    }
 
     // --- Core Logic ---
+    // Load the server's shift rows into `entries` and merge back any shifts that
+    // failed to save previously (deduped by id) so nothing is ever lost.
+    function applyServerData(data) {
+      entries = data.rows
+        .filter(r => r[0] && r[0] !== 'Date')
+        .map(r => ({ date: r[0], inTime: r[1], outTime: r[2], raw: parseFloat(r[3]), net: parseFloat(r[4]), id: r[5] ? r[5].toString() : '' }))
+        .reverse();
+      const serverIds = new Set(entries.map(e => e.id));
+      for (const p of getPending()) {
+        if (!serverIds.has(p.id)) entries.unshift(p);
+        else removePending(p.id); // server already has it
+      }
+    }
+
     async function loadEntries() {
       if (!SCRIPT_URL || SCRIPT_URL.indexOf('script.google.com') === -1) {
          setStatus('INVALID ENCODED URL', 'err');
@@ -282,17 +305,7 @@
         const data = await res.json();
         if (!data.ok) throw new Error("Backend error");
 
-        entries = data.rows
-          .filter(r => r[0] && r[0] !== 'Date')
-          .map(r => ({ date: r[0], inTime: r[1], outTime: r[2], raw: parseFloat(r[3]), net: parseFloat(r[4]), id: r[5] ? r[5].toString() : '' }))
-          .reverse();
-
-        // Merge in any shifts that failed to save previously so they're never lost.
-        const serverIds = new Set(entries.map(e => e.id));
-        for (const p of getPending()) {
-          if (!serverIds.has(p.id)) entries.unshift(p);
-          else removePending(p.id); // server already has it
-        }
+        applyServerData(data);
 
         // The server is the source of truth for whether a session is open.
         // If it says none is open, drop any stale local session rather than
@@ -331,6 +344,42 @@
       }
     }
 
+    // Re-check the server so a long-open tab reflects actions taken elsewhere —
+    // e.g. you punched out on your PC while your phone sat open all day. Runs on
+    // an interval and whenever the tab regains focus.
+    async function syncState() {
+      if (syncing || editingId !== null) return; // don't overlap or clobber an in-progress edit
+      syncing = true;
+      try {
+        const res = await apiPost({ action: 'load' });
+        const data = await res.json();
+        if (!data.ok) return;
+        applyServerData(data);
+
+        if (data.clockInTime) {
+          // A session is open on the server; reflect it if we weren't showing one.
+          if (!clockedIn) {
+            clockedIn = true;
+            clockInTime = new Date(data.clockInTime);
+            saveOpenSession(clockInTime.toISOString());
+            restoreClockInUI();
+          }
+        } else if (clockedIn && Date.now() - lastLocalActionAt > 10000) {
+          // Server says no open session and we're not mid-save of our own punch:
+          // it was closed on another device. Flip to clocked-out so this tab
+          // can't punch the same session out again (the duplicate you saw).
+          clockedIn = false;
+          clockInTime = null;
+          clearOpenSession();
+          showClockedOutUI();
+          setStatus('CLOCKED OUT ON ANOTHER DEVICE', 'ok');
+          setTimeout(() => setStatus('', ''), 4000);
+        }
+        renderShifts();
+      } catch { /* offline: keep current state until the next sync */ }
+      finally { syncing = false; }
+    }
+
     async function retryPending() {
       for (const entry of getPending()) {
         try {
@@ -343,6 +392,7 @@
 
     async function handleClock() {
       setBtn(true);
+      lastLocalActionAt = Date.now(); // pause auto-sync flips while our own save is in flight
       if (!clockedIn) {
         clockInTime = new Date();
         clockedIn = true;
@@ -368,10 +418,7 @@
         clockedIn = false;
         clockInTime = null;
         clearOpenSession();
-        document.getElementById('clockBtn').className = 'clock-btn in';
-        document.getElementById('clockBtn').innerHTML = '<span class="btn-dot"></span>CLOCK IN';
-        document.getElementById('breakNote').style.display = '';
-        document.getElementById('sessionBanner').classList.remove('active');
+        showClockedOutUI();
 
         entries.unshift(entry);
         currentWeekOffset = 0;
@@ -573,6 +620,11 @@
     }
 
     loadEntries(); tick(); setInterval(tick, 1000);
+
+    // Keep a long-open tab honest about actions taken on another device.
+    setInterval(() => { if (!document.hidden) syncState(); }, SYNC_MS);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) syncState(); });
+    window.addEventListener('focus', syncState);
   </script>
 </body>
 </html>
